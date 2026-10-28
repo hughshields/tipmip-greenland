@@ -168,7 +168,7 @@ function forcing = interpTIPMIPGreenlandSMB(md, scenario)
 		eps = readESM(scen_pr_file,  'pr_ratio',    ii, crop, md);
 		tas(1:nv,kk) = tas_ref(:,mm) + (dT - tas_off(:,mm));
 		pr(1:nv,kk)  = pr_ref(:,mm) .* (eps ./ pr_off(:,mm));
-		fprintf('\r   -- %d/%d months', kk(end), nt);
+		fprintf('\r   -- %d/%d years', kk(end)/12, nt/12);
 	end
 	fprintf('\n');
 
