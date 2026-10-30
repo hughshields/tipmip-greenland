@@ -1,0 +1,239 @@
+--- a/src/c/classes/Inputs/DatasetInput.h
++++ b/src/c/classes/Inputs/DatasetInput.h
+@@ -45,5 +45,6 @@
+ 		TriaInput*  GetTriaInputByOffset(int i);
+ 		TransientInput* GetTransientInputByOffset(int offset);
+ 		void GetInputValue(IssmDouble* pvalue,Gauss* gauss,int index);
++		void SetCurrentTimeInput(IssmDouble time);
+ };
+ #endif  /* _DATASETINPUT2_H */
+--- a/src/c/classes/Inputs/DatasetInput.cpp
++++ b/src/c/classes/Inputs/DatasetInput.cpp
+@@ -260,6 +260,17 @@
+ 
+ }
+ /*}}}*/
++void DatasetInput::SetCurrentTimeInput(IssmDouble time){ /*{{{*/
++
++	/*Update the current input of every TransientInput member to this time
++	 * (static members are left untouched)*/
++	for(int i=0;i<this->numids;i++){
++		if(this->inputs[i]->ObjectEnum()==TransientInputEnum){
++			xDynamicCast<TransientInput*>(this->inputs[i])->SetCurrentTimeInput(time);
++		}
++	}
++}
++/*}}}*/
+ IssmDouble DatasetInput::GetInputMin(void){ /*{{{*/
+ 
+ 	IssmDouble minvalue,newminvalue;
+--- a/src/c/shared/Elements/PddSurfaceMassBalanceSicopolis.cpp
++++ b/src/c/shared/Elements/PddSurfaceMassBalanceSicopolis.cpp
+@@ -7,6 +7,9 @@
+ #include "../Exceptions/exceptions.h"
+ #include <cmath>
+ 
++/* t_ampl and p_ampl are arrays of 12 monthly values (additive temperature anomaly,
++   multiplicative precipitation factor). Callers with a single annual anomaly must
++   replicate it over the 12 months (Element::PositiveDegreeDaySicopolis does this). */
+ IssmDouble PddSurfaceMassBalanceSicopolis(IssmDouble* monthlytemperatures, IssmDouble* monthlyprec,
+ 				 IssmDouble* melt, IssmDouble* accu, IssmDouble* melt_star, IssmDouble* t_ampl, IssmDouble* p_ampl,
+ 				 IssmDouble yts, IssmDouble s, IssmDouble desfac,
+@@ -47,7 +50,7 @@
+ 
+     /******** Monhtly temperature correction *******/
+     monthlytemperatures[imonth]=monthlytemperatures[imonth]-rlaps*st;//*max(st,1e-3);
+-    tstar=monthlytemperatures[imonth]+t_ampl[0];
++    tstar=monthlytemperatures[imonth]+t_ampl[imonth];
+ 
+     /********* Precipitation correction *************/
+     /* Ref: Vizcaino et al 2010; DOI 10.1007/s00382-009-0591-y */
+@@ -56,7 +59,7 @@
+ 	 else
+       q=exp(desfac*(max(s,2000.0)-s0p));
+ 
+-    precip_star=q*monthlyprec[imonth]*sconv*p_ampl[0]*yts; // convert precip from m/s -> m/a
++    precip_star=q*monthlyprec[imonth]*sconv*p_ampl[imonth]*yts; // convert precip from m/s -> m/a
+     precip=precip+precip_star*inv_twelve;
+ 
+     /********* compute PDD **************************/
+--- a/src/c/classes/Elements/Element.cpp
++++ b/src/c/classes/Elements/Element.cpp
+@@ -3930,8 +3930,8 @@
+ 	IssmDouble* s0p=xNew<IssmDouble>(NUM_VERTICES);		// reference elevation for precip.
+ 	IssmDouble* s0t=xNew<IssmDouble>(NUM_VERTICES);		// reference elevation for temperature
+ 	IssmDouble* smbcorr=xNew<IssmDouble>(NUM_VERTICES); // surface mass balance correction; will be added after pdd call
+-	IssmDouble* p_ampl=xNew<IssmDouble>(NUM_VERTICES);	// precip anomaly
+-	IssmDouble* t_ampl=xNew<IssmDouble>(NUM_VERTICES);	// remperature anomaly
++	IssmDouble* p_ampl=xNew<IssmDouble>(NUM_VERTICES_MONTHS_PER_YEAR);	// precip anomaly, [iv*12+month]
++	IssmDouble* t_ampl=xNew<IssmDouble>(NUM_VERTICES_MONTHS_PER_YEAR);	// temperature anomaly, [iv*12+month]
+ 	IssmDouble rho_water,rho_ice,desfac,rlaps;
+ 	IssmDouble pdd_fac_ice,pdd_fac_snow;
+ 	IssmDouble inv_twelve=1./12.;								//factor for monthly average
+@@ -3982,19 +3982,55 @@
+ 	GetInputListOnVertices(&s0p[0],SmbS0pEnum);
+ 	GetInputListOnVertices(&s0t[0],SmbS0tEnum);
+ 	GetInputListOnVertices(&smbcorr[0],SmbSmbCorrEnum);
+-	GetInputListOnVertices(&t_ampl[0],SmbTemperaturesAnomalyEnum);
+-	GetInputListOnVertices(&p_ampl[0],SmbPrecipitationsAnomalyEnum);
++
++	/*Anomalies. Two supported forms, both expanded to t_ampl[iv*12+month] / p_ampl[iv*12+month]:
++	 *  - legacy: one value per vertex (static or annual time series), replicated over the 12 months
++	 *    (results identical to the previous behaviour)
++	 *  - monthly: a dataset of 12 members (one per calendar month), each possibly a time series,
++	 *    set to the current model time*/
++	if(this->inputs->GetInputObjectEnum(SmbTemperaturesAnomalyEnum)==DatasetInputEnum){
++		DatasetInput* tinput=this->GetDatasetInput(SmbTemperaturesAnomalyEnum); _assert_(tinput);
++		tinput->SetCurrentTimeInput(time);
++		for(int month=0;month<12;month++){
++			for(int iv=0;iv<NUM_VERTICES;iv++){
++				gauss->GaussVertex(iv);
++				tinput->GetInputValue(&t_ampl[iv*12+month],gauss,month);
++			}
++		}
++	}
++	else{
++		IssmDouble* tmp=xNew<IssmDouble>(NUM_VERTICES);
++		GetInputListOnVertices(&tmp[0],SmbTemperaturesAnomalyEnum);
++		for(int iv=0;iv<NUM_VERTICES;iv++) for(int month=0;month<12;month++) t_ampl[iv*12+month]=tmp[iv];
++		xDelete<IssmDouble>(tmp);
++	}
++	if(this->inputs->GetInputObjectEnum(SmbPrecipitationsAnomalyEnum)==DatasetInputEnum){
++		DatasetInput* pinput=this->GetDatasetInput(SmbPrecipitationsAnomalyEnum); _assert_(pinput);
++		pinput->SetCurrentTimeInput(time);
++		for(int month=0;month<12;month++){
++			for(int iv=0;iv<NUM_VERTICES;iv++){
++				gauss->GaussVertex(iv);
++				pinput->GetInputValue(&p_ampl[iv*12+month],gauss,month);
++			}
++		}
++	}
++	else{
++		IssmDouble* tmp=xNew<IssmDouble>(NUM_VERTICES);
++		GetInputListOnVertices(&tmp[0],SmbPrecipitationsAnomalyEnum);
++		for(int iv=0;iv<NUM_VERTICES;iv++) for(int month=0;month<12;month++) p_ampl[iv*12+month]=tmp[iv];
++		xDelete<IssmDouble>(tmp);
++	}
+ 
+ 	/*measure the surface mass balance*/
+ 	for (int iv = 0; iv<NUM_VERTICES; iv++){
+ 		smb[iv]=PddSurfaceMassBalanceSicopolis(&monthlytemperatures[iv*12], &monthlyprec[iv*12],
+-					&melt[iv], &accu[iv], &melt_star[iv], &t_ampl[iv], &p_ampl[iv], yts, s[iv],
++					&melt[iv], &accu[iv], &melt_star[iv], &t_ampl[iv*12], &p_ampl[iv*12], yts, s[iv],
+ 					desfac, s0t[iv], s0p[iv],rlaps,rho_water,rho_ice,pdd_fac_ice,pdd_fac_snow);
+ 
+ 		/* make correction */
+ 		smb[iv] = smb[iv]+smbcorr[iv];
+ 		/*Get yearlytemperatures */
+-		for(int month=0;month<12;month++) yearlytemperatures[iv]=yearlytemperatures[iv]+((monthlytemperatures[iv*12+month]+273.15)+t_ampl[iv])*inv_twelve; // Has to be in Kelvin
++		for(int month=0;month<12;month++) yearlytemperatures[iv]=yearlytemperatures[iv]+((monthlytemperatures[iv*12+month]+273.15)+t_ampl[iv*12+month])*inv_twelve; // Has to be in Kelvin
+ 
+ 		if(isfirnwarming){
+ 			if(melt_star[iv]>=melt[iv]){
+--- a/src/m/classes/SMBpddSicopolis.m
++++ b/src/m/classes/SMBpddSicopolis.m
+@@ -34,8 +34,16 @@
+ 		function self = extrude(self,md) % {{{
+ 			self.precipitation=project3d(md,'vector',self.precipitation,'type','node');
+ 			self.monthlytemperatures=project3d(md,'vector',self.monthlytemperatures,'type','node');
+-			self.temperature_anomaly=project3d(md,'vector',self.temperature_anomaly,'type','node');
+-			self.precipitation_anomaly=project3d(md,'vector',self.precipitation_anomaly,'type','node');
++			if iscell(self.temperature_anomaly)
++				for i=1:numel(self.temperature_anomaly), self.temperature_anomaly{i}=project3d(md,'vector',self.temperature_anomaly{i},'type','node'); end
++			else
++				self.temperature_anomaly=project3d(md,'vector',self.temperature_anomaly,'type','node');
++			end
++			if iscell(self.precipitation_anomaly)
++				for i=1:numel(self.precipitation_anomaly), self.precipitation_anomaly{i}=project3d(md,'vector',self.precipitation_anomaly{i},'type','node'); end
++			else
++				self.precipitation_anomaly=project3d(md,'vector',self.precipitation_anomaly,'type','node');
++			end
+ 			self.smb_corr=project3d(md,'vector',self.smb_corr,'type','node');
+ 			self.s0p=project3d(md,'vector',self.s0p,'type','node');
+ 			self.s0t=project3d(md,'vector',self.s0t,'type','node');
+@@ -54,13 +62,17 @@
+ 				self.s0t=zeros(md.mesh.numberofvertices,1);
+ 				disp('      no SMBpddSicopolis.s0t specified: values set as zero');
+ 			end
+-			if isnan(self.temperature_anomaly)
+-				self.temperature_anomaly=zeros(md.mesh.numberofvertices,1);
+-				disp('      no SMBpddSicopolis.temperature_anomaly specified: values set as zero');
+-			end
+-			if isnan(self.precipitation_anomaly)
+-				self.precipitation_anomaly=ones(md.mesh.numberofvertices,1);
+-				disp('      no SMBpddSicopolis.precipitation_anomaly specified: values set as ones');
++			if ~iscell(self.temperature_anomaly)
++				if isnan(self.temperature_anomaly)
++					self.temperature_anomaly=zeros(md.mesh.numberofvertices,1);
++					disp('      no SMBpddSicopolis.temperature_anomaly specified: values set as zero');
++				end
++			end
++			if ~iscell(self.precipitation_anomaly)
++				if isnan(self.precipitation_anomaly)
++					self.precipitation_anomaly=ones(md.mesh.numberofvertices,1);
++					disp('      no SMBpddSicopolis.precipitation_anomaly specified: values set as ones');
++				end
+ 			end
+ 			if isnan(self.smb_corr)
+ 				self.smb_corr=zeros(md.mesh.numberofvertices,1);
+@@ -92,8 +104,27 @@
+ 				md = checkfield(md,'fieldname','smb.pdd_fac_ice','>',0,'numel',1);
+ 				md = checkfield(md,'fieldname','smb.pdd_fac_snow','>',0,'numel',1);
+ 				md = checkfield(md,'fieldname','smb.smb_corr','NaN',1,'Inf',1,'size',[md.mesh.numberofvertices 1]);
+-				md = checkfield(md,'fieldname','smb.temperature_anomaly','NaN',1,'Inf',1,'size',[md.mesh.numberofvertices 1]);
+-				md = checkfield(md,'fieldname','smb.precipitation_anomaly','NaN',1,'Inf',1,'size',[md.mesh.numberofvertices 1]);
++				if iscell(self.temperature_anomaly)
++					%monthly anomaly: cell of 12 time series (one per calendar month), each (nv+1) x ntimes, time row (years) last
++					md = checkfield(md,'fieldname','smb.temperature_anomaly','cell',1,'numel',12);
++					if numel(self.temperature_anomaly)==12
++						for i=1:12
++							md = checkfield(md,'field',self.temperature_anomaly{i},'fieldname',sprintf('smb.temperature_anomaly{%d}',i),'NaN',1,'Inf',1,'timeseries',1,'size',[md.mesh.numberofvertices+1 NaN]);
++						end
++					end
++				else
++					md = checkfield(md,'fieldname','smb.temperature_anomaly','NaN',1,'Inf',1,'size',[md.mesh.numberofvertices 1]);
++				end
++				if iscell(self.precipitation_anomaly)
++					md = checkfield(md,'fieldname','smb.precipitation_anomaly','cell',1,'numel',12);
++					if numel(self.precipitation_anomaly)==12
++						for i=1:12
++							md = checkfield(md,'field',self.precipitation_anomaly{i},'fieldname',sprintf('smb.precipitation_anomaly{%d}',i),'NaN',1,'Inf',1,'timeseries',1,'size',[md.mesh.numberofvertices+1 NaN],'>=',0.);
++						end
++					end
++				else
++					md = checkfield(md,'fieldname','smb.precipitation_anomaly','NaN',1,'Inf',1,'size',[md.mesh.numberofvertices 1]);
++				end
+ 			end
+ 			md = checkfield(md,'fieldname','smb.steps_per_step','>=',1,'numel',[1]);
+ 			md = checkfield(md,'fieldname','smb.averaging', 'numel', [1], 'values', [0, 1, 2]);
+@@ -105,8 +136,8 @@
+ 			disp(sprintf('\n   SICOPOLIS PDD scheme (Calov & Greve, 2005) :'));
+ 			fielddisplay(self,'monthlytemperatures','monthly surface temperatures [K]');
+ 			fielddisplay(self,'precipitation','monthly surface precipitation [m/yr water eq]');
+-			fielddisplay(self,'temperature_anomaly','anomaly to monthly reference temperature (additive; [K])');
+-			fielddisplay(self,'precipitation_anomaly','anomaly to monthly precipitation (multiplicative, e.g. q=q0*exp(0.070458*DeltaT) after Huybrechts (2002)); [no unit])');
++			fielddisplay(self,'temperature_anomaly','anomaly to monthly reference temperature (additive; [K]): nv x 1 (same for all months) or cell{12} of (nv+1) x nt monthly time series (time in years, last row)');
++			fielddisplay(self,'precipitation_anomaly','anomaly to monthly precipitation (multiplicative, e.g. q=q0*exp(0.070458*DeltaT) after Huybrechts (2002)); [no unit]): nv x 1 or cell{12} of (nv+1) x nt monthly time series');
+ 			fielddisplay(self,'smb_corr','correction of smb after PDD call [m/a]');
+ 			fielddisplay(self,'s0p','should be set to elevation from precip source (between 0 and a few 1000s m, default is 0) [m]');
+ 			fielddisplay(self,'s0t','should be set to elevation from temperature source (between 0 and a few 1000s m, default is 0) [m]');
+@@ -138,8 +169,17 @@
+ 
+ 			WriteData(fid,prefix,'object',self,'class','smb','fieldname','monthlytemperatures','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
+ 			WriteData(fid,prefix,'object',self,'class','smb','fieldname','precipitation','format','DoubleMat','mattype',1,'scale',1./yts,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
+-			WriteData(fid,prefix,'object',self,'class','smb','fieldname','temperature_anomaly','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
+-			WriteData(fid,prefix,'object',self,'class','smb','fieldname','precipitation_anomaly','format','DoubleMat','mattype',1,'scale',1./yts,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			if iscell(self.temperature_anomaly)
++				%monthly: cell of 12 (nv+1) x nt matrices -> MatArray -> dataset of TransientInputs in C++
++				WriteData(fid,prefix,'object',self,'class','smb','fieldname','temperature_anomaly','format','MatArray','timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			else
++				WriteData(fid,prefix,'object',self,'class','smb','fieldname','temperature_anomaly','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			end
++			if iscell(self.precipitation_anomaly)
++				WriteData(fid,prefix,'object',self,'class','smb','fieldname','precipitation_anomaly','format','MatArray','scale',1./yts,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			else
++				WriteData(fid,prefix,'object',self,'class','smb','fieldname','precipitation_anomaly','format','DoubleMat','mattype',1,'scale',1./yts,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			end
+ 			WriteData(fid,prefix,'object',self,'class','smb','fieldname','smb_corr','format','DoubleMat','mattype',1,'scale',1./yts,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
+ 			WriteData(fid, prefix, 'object', self, 'fieldname', 'steps_per_step', 'format', 'Integer');
+ 			WriteData(fid, prefix, 'object', self, 'fieldname', 'averaging', 'format', 'Integer')
