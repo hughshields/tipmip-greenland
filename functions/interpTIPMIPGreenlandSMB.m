@@ -1,15 +1,17 @@
-function forcing = interpTIPMIPGreenlandSMB(md, scenario)
+function smb = interpTIPMIPGreenlandSMB(md, scenario)
 	%{
-	%interpTIPMIPGreenlandSMB - build monthly 2 m air temperature and precip
-	%forcing for TIPMIP-ICE SHEETS (Greenland, UKESM1-2-LL) from a present-day
-	%(2007) RACMO climatology plus shifted ESM anomalies/ratios.
+	%interpTIPMIPGreenlandSMB - build the monthly 2 m air temperature / precipitation
+	%forcing for TIPMIP-ICE SHEETS (Greenland, UKESM1-2-LL) and return it as an
+	%SMBpddSicopolis object: static present-day (2007) RACMO climatology plus
+	%shifted ESM anomalies/ratios given as monthly time series.
+	%
+	%Requires the 'monthly anomalies' ISSM patch (tipmip_monthly_anomalies.patch).
 	%
 	%Example
 	%-------
 	%.. code-block:: matlab
-	%	f = interpTIPMIPGreenlandSMB(md,'ramp');
-	%	f = interpTIPMIPGreenlandSMB(md,'stab2.0');
-	%	f = interpTIPMIPGreenlandSMB(md,'stab4.0');
+	%	md.smb = interpTIPMIPGreenlandSMB(md,'ramp');
+	%	md.smb.rlaps = 5;  % e.g. Tier 2 lapse-rate (melt-elevation feedback) variations
 	%
 	%Inputs
 	%------
@@ -23,18 +25,25 @@ function forcing = interpTIPMIPGreenlandSMB(md, scenario)
 	%	stab4.0 : forcing years 195-394-> t = 194 to 394  (200 yr, branches at ramp yr 194)
 	%
 	%Method (per grid vertex and per calendar month m)
-	%	T(t) = Tref_RACMO(m) + [ dT_ESM(t) - mean_{ESM yrs 37-41} dT_ESM(m) ]
-	%	P(t) = Pref_RACMO(m) * [ eps_ESM(t) / mean_{ESM yrs 37-41} eps_ESM(m) ]
-	%Tref/Pref: 1992-2021 RACMO2.3p2-ERA monthly climatologies (2 m air temperature
+	%	T(t) = Tclim_RACMO(m) + [ dT_ESM(t) - mean_{ESM yrs 37-41} dT_ESM(m) ]
+	%	P(t) = Pclim_RACMO(m) * [ eps_ESM(t) / mean_{ESM yrs 37-41} eps_ESM(m) ]
+	%Tclim/Pclim: 1992-2021 RACMO2.3p2-ERA monthly climatologies (2 m air temperature
 	%'tas' and 'pr'). The offset always comes from the *ramp* file (esm-up2p0).
 	%
-	%Output (struct)
+	%Output
 	%------
-	%forcing.tas      (nv+1) x nt  K, last row = time (decimal years)
-	%forcing.pr       (nv+1) x nt  m ice eq. / yr, last row = time
-	%forcing.month    1 x nt       calendar month (1-12) of each column
-	%forcing.tas_ref, forcing.pr_ref   nv x 12 reference climatologies (K, m ice/yr)
-	%forcing.tas_off, forcing.pr_off   nv x 12 ESM offsets (K, ratio)
+	%smb: SMBpddSicopolis with
+	%	monthlytemperatures  nv x 12  static RACMO climatology [K]
+	%	precipitation        nv x 12  static RACMO climatology [m water eq./yr, ISSM convention]
+	%	temperature_anomaly  cell{12} additive [K], one (nv+1) x nyears time series per
+	%	                     calendar month, time row (years) last
+	%	precipitation_anomaly cell{12} multiplicative ratio, same layout
+	%	Each annual field is stamped at the MIDDLE of its forcing year (stamp_frac = 0.5),
+	%	which is the unbiased choice for sub-annual model steps (e.g. 0.01 yr): ISSM
+	%	interpolates linearly between stamps, so each year's field applies at the middle
+	%	of its own year. Before the first stamp and after the last one the nearest field
+	%	is held. s0t = s0p = md.geometry.surface at call time; PDD parameters are those of
+	%	the SICOPOLIS-PDD example (rlaps 6 K/km, 7.28 / 2.73 mm w.e./(K day), no firn warming).
 	%}
 
 	if nargin < 2, error('usage: interpTIPMIPGreenlandSMB(md, scenario)'); end
@@ -133,7 +142,7 @@ function forcing = interpTIPMIPGreenlandSMB(md, scenario)
 	pr_off(pr_off <= 0) = 1; % guard against divide-by-zero
 
 	% ------------------------------------------------------------------
-	% 3) Scenario time series
+	% 3) Scenario time series, as 12 per-calendar-month time series
 	% ------------------------------------------------------------------
 	[tmid, tbnds, simyr, mon] = esmTime(scen_tas_file, cumdays);
 	if mon(1) ~= 1
@@ -149,44 +158,82 @@ function forcing = interpTIPMIPGreenlandSMB(md, scenario)
 		warning('%s file only has %d years (expected %d)', scenario, numel(idx)/12, stab_years);
 	end
 	nt = numel(idx);
-	nv = md.mesh.numberofvertices;
-	disp(['   == Scenario ' scenario ': ' num2str(nt/12) ' years, ~' num2str(2*nt*nv*8/1e9,'%.1f') ' GB for T+P']);
+	if mod(nt,12) ~= 0, error('Expected a whole number of years, got %d months', nt); end
+	nyr = nt/12;
+	nv  = md.mesh.numberofvertices;
+	disp(['   == Scenario ' scenario ': ' num2str(nyr) ' years, ~' num2str(2*nt*nv*8/1e9,'%.1f') ' GB for T+P']);
 
 	[~, ~, ~, mon_p] = esmTime(scen_pr_file, cumdays);
 	if numel(mon_p) ~= numel(mon) || any(mon_p ~= mon)
 		error('pr and tas files in %s have different time axes', scen_dir);
 	end
 
+	% Time stamps of the annual fields (decimal years, elapsed model time; ramp: ESM
+	% year 1 starts at t=0 so forcing year 39 spans t=38..39; stab: file start = branch
+	% time). Every calendar-month series shares the same stamps. ISSM interpolates
+	% linearly between stamps. With a 0.01 yr model step the time inside a year is
+	% resolved, so each annual field is stamped at the MIDDLE of its forcing year
+	% (stamp_frac = 0.5): the field of year k then applies at the middle of year k, with
+	% no half-year lag. (Stamping at the year END would blend each year with the
+	% previous one; 1.0 only makes sense for one-year model steps.)
+	stamp_frac = 0.5;
+	t_first = t_branch + (tbnds(idx(1),1) - tbnds(1,1))/365;   % start of first forcing year
+	t_year  = t_first + (0:nyr-1) + stamp_frac;
+
 	crop = getCrop(scen_tas_file, md);
-	tas = zeros(nv+1, nt);
-	pr  = zeros(nv+1, nt);
+	tanom = cell(12,1);   % additive temperature anomaly [K], one cell per calendar month
+	panom = cell(12,1);   % multiplicative precipitation ratio, one cell per calendar month
+	for m = 1:12
+		tanom{m} = zeros(nv+1, nyr); tanom{m}(end,:) = t_year;
+		panom{m} = zeros(nv+1, nyr); panom{m}(end,:) = t_year;
+	end
+	% SMBpddSicopolis expects the (static) precipitation climatology as water equivalent and
+	% the C++ converts it to ice equivalent with rho_water(seawater)/rho_ice; pre-scale so the
+	% net conversion from our ice-equivalent field is exact. (Anomaly ratios are unitless.)
+	ice2w = md.materials.rho_ice/md.materials.rho_water;
 	for k = 1:12:nt
-		kk  = k:min(k+11, nt);
-		ii  = idx(kk);
+		yr  = (k-1)/12 + 1;
+		ii  = idx(k:k+11);
 		mm  = mon(ii);
 		dT  = readESM(scen_tas_file, 'tas_anomaly', ii, crop, md);
 		eps = readESM(scen_pr_file,  'pr_ratio',    ii, crop, md);
-		tas(1:nv,kk) = tas_ref(:,mm) + (dT - tas_off(:,mm));
-		pr(1:nv,kk)  = pr_ref(:,mm) .* (eps ./ pr_off(:,mm));
-		fprintf('\r   -- %d/%d years', kk(end)/12, nt/12);
+		% shifted anomalies relative to the 2007 reference: T = Tclim(m) + A, P = Pclim(m) * R
+		A = dT - tas_off(:,mm);     % K, additive
+		R = eps ./ pr_off(:,mm);    % ratio, multiplicative
+		for j = 1:12
+			tanom{mm(j)}(1:nv,yr) = A(:,j);
+			panom{mm(j)}(1:nv,yr)  = R(:,j);
+		end
+		fprintf('\r   -- %d/%d years', yr, nyr);
 	end
 	fprintf('\n');
+	disp(['   == Model time: forcing years span t = ' num2str(t_first) ' to ' num2str(t_first+nyr) ...
+		'; annual fields stamped at t = ' num2str(t_year(1)) ' ... ' num2str(t_year(end))]);
 
-	% model time: elapsed years. Ramp: file starts at ESM year 1 -> t=0 at start of
-	% year 1 (so forcing year 39 starts at t=38). Stab: file start = branch time.
-	time_vec = t_branch + (tmid(idx) - tbnds(1,1))/365;
-	tas(end,:) = time_vec(:)';
-	pr(end,:)  = time_vec(:)';
-	disp(['   == Model time covers t = ' num2str(t_branch + (tbnds(idx(1),1)-tbnds(1,1))/365) ...
-		' to ' num2str(t_branch + (tbnds(idx(end),2)-tbnds(1,1))/365)]);
+	% ------------------------------------------------------------------
+	% 4) Positive-degree-day SMB (SICOPOLIS-type PDD in ISSM)
+	% ------------------------------------------------------------------
+	smb = SMBpddSicopolis();   % must be the patched class (monthly anomaly cell arrays)
 
-	forcing.tas     = tas;
-	forcing.pr      = pr;
-	forcing.month   = mon(idx)';
-	forcing.tas_ref = tas_ref;
-	forcing.pr_ref  = pr_ref;
-	forcing.tas_off = tas_off;
-	forcing.pr_off  = pr_off;
+	% static monthly climatology (nv x 12)
+	smb.monthlytemperatures = max(200., tas_ref);   % K
+	smb.precipitation       = pr_ref*ice2w;        % m water eq./yr (ISSM convention)
+	% monthly anomaly time series: cell{m} = (nv+1) x nyr, trailing time row (years)
+	smb.temperature_anomaly   = tanom;             % additive [K]
+	smb.precipitation_anomaly = panom;             % multiplicative ratio
+
+	% reference height for temperature and precip lapse-rate / desertification
+	% corrections. Here: the surface of the (2007) initial state.
+	smb.s0t = max(0, md.geometry.surface);
+	smb.s0p = smb.s0t;
+
+	% PDD parameters (as in the SICOPOLIS-PDD example)
+	smb.rlaps         = 6;               % K/km lapse rate
+	smb.smb_corr      = zeros(nv, 1);
+	smb.isfirnwarming = 0;
+	smb.pdd_fac_ice   = 7.28;            % mm w.e. / (deg C day)
+	smb.pdd_fac_snow  = 2.73;
+
 end
 
 % ======================================================================
