@@ -1,0 +1,312 @@
+diff -ruN a/src/c/analyses/LevelsetAnalysis.cpp b/src/c/analyses/LevelsetAnalysis.cpp
+--- a/src/c/analyses/LevelsetAnalysis.cpp	2026-11-02 13:37:11.033497426 +0000
++++ b/src/c/analyses/LevelsetAnalysis.cpp	2026-11-02 13:37:18.112860299 +0000
+@@ -158,12 +158,15 @@
+ 				iomodel->FetchDataToInput(inputs,elements,"md.frontalforcings.ablationrate",CalvingAblationrateEnum);
+ 			}
+ 			break;
+-		case FrontalForcingsRignotEnum:
++		case FrontalForcingsRignotEnum:{
+          /*Retrieve thermal forcing only in the case of non-arma FrontalForcingsRignot*/
++         bool isdischargerunoff;
++         iomodel->FindConstant(&isdischargerunoff,"md.frontalforcings.isdischargerunoff");
+          iomodel->FetchDataToInput(inputs,elements,"md.frontalforcings.thermalforcing",ThermalForcingEnum);
+          iomodel->FetchDataToInput(inputs,elements,"md.frontalforcings.basin_id",FrontalForcingsBasinIdEnum);
+-         iomodel->FetchDataToInput(inputs,elements,"md.frontalforcings.subglacial_discharge",FrontalForcingsSubglacialDischargeEnum);
+-			break;
++         /*If isdischargerunoff, discharge is computed from SMB runoff at each step*/
++         if(isdischargerunoff==false) iomodel->FetchDataToInput(inputs,elements,"md.frontalforcings.subglacial_discharge",FrontalForcingsSubglacialDischargeEnum);
++			break;}
+ 		case FrontalForcingsRignotarmaEnum:
+ 			bool isdischargearma;
+ 			iomodel->FindConstant(&isdischargearma,"md.frontalforcings.isdischargearma");
+@@ -339,6 +342,7 @@
+ 			break;
+ 		case FrontalForcingsRignotEnum:
+ 			parameters->AddObject(iomodel->CopyConstantObject("md.frontalforcings.num_basins",FrontalForcingsNumberofBasinsEnum));
++			parameters->AddObject(iomodel->CopyConstantObject("md.frontalforcings.isdischargerunoff",FrontalForcingsIsDischargeRunoffEnum));
+ 			break;
+ 		default:
+ 			_error_("Frontal forcings "<<EnumToStringx(melt_parameterization)<<" not supported yet");
+diff -ruN a/src/c/classes/Elements/Element.cpp b/src/c/classes/Elements/Element.cpp
+--- a/src/c/classes/Elements/Element.cpp	2026-11-02 13:37:11.194143735 +0000
++++ b/src/c/classes/Elements/Element.cpp	2026-11-02 13:37:18.112266683 +0000
+@@ -3923,6 +3923,7 @@
+ 	IssmDouble* melt=xNew<IssmDouble>(NUM_VERTICES);		// melting comp. of surface mass balance
+ 	IssmDouble* accu=xNew<IssmDouble>(NUM_VERTICES);		// accuumulation comp. of surface mass balance
+ 	IssmDouble* melt_star=xNew<IssmDouble>(NUM_VERTICES);
++	IssmDouble* runoff=xNew<IssmDouble>(NUM_VERTICES);		// runoff [m w.e. s-1], used by frontal forcings
+ 	IssmDouble* monthlytemperatures=xNew<IssmDouble>(NUM_VERTICES_MONTHS_PER_YEAR);
+ 	IssmDouble* monthlyprec=xNew<IssmDouble>(NUM_VERTICES_MONTHS_PER_YEAR);
+ 	IssmDouble* yearlytemperatures=xNew<IssmDouble>(NUM_VERTICES); memset(yearlytemperatures, 0., NUM_VERTICES*sizeof(IssmDouble));
+@@ -4027,6 +4028,10 @@
+ 					&melt[iv], &accu[iv], &melt_star[iv], &t_ampl[iv*12], &p_ampl[iv*12], yts, s[iv],
+ 					desfac, s0t[iv], s0p[iv],rlaps,rho_water,rho_ice,pdd_fac_ice,pdd_fac_snow);
+ 
++		/*PddSurfaceMassBalanceSicopolis returns runoff (meltwater + excess rain) in m ice eq. s-1 as "melt".
++		 * Convert back to m water eq. s-1 with the same density used there to convert precip (rho_water)*/
++		runoff[iv] = max(melt[iv],0.)*rho_ice/rho_water;
++
+ 		/* make correction */
+ 		smb[iv] = smb[iv]+smbcorr[iv];
+ 		/*Get yearlytemperatures */
+@@ -4050,6 +4055,7 @@
+ 			this->AddInput(SmbMassBalanceEnum,&smb[0],P1Enum);
+ 			this->AddInput(SmbAccumulationEnum,&accu[0],P1Enum);
+ 			this->AddInput(SmbMeltEnum,&melt[0],P1Enum);
++			this->AddInput(SmbRunoffEnum,&runoff[0],P1Enum);
+ 			break;
+ 		case PentaEnum:
+ 			bool isthermal;
+@@ -4113,10 +4119,12 @@
+ 			this->AddInput(TemperaturePDDEnum,&yearlytemperatures[0],P1Enum);
+ 			this->AddInput(SmbAccumulationEnum,&accu[0],P1Enum);
+ 			this->AddInput(SmbMeltEnum,&melt[0],P1Enum);
++			this->AddInput(SmbRunoffEnum,&runoff[0],P1Enum);
+ 			this->InputExtrude(TemperaturePDDEnum,-1);
+ 			this->InputExtrude(SmbMassBalanceEnum,-1);
+ 			this->InputExtrude(SmbAccumulationEnum,-1);
+ 			this->InputExtrude(SmbMeltEnum,-1);
++			this->InputExtrude(SmbRunoffEnum,-1);
+ 			break;
+ 		default: _error_("Not implemented yet");
+ 	}
+@@ -4136,6 +4144,7 @@
+ 	xDelete<IssmDouble>(p_ampl);
+ 	xDelete<IssmDouble>(smbcorr);
+ 	xDelete<IssmDouble>(melt_star);
++	xDelete<IssmDouble>(runoff);
+ }
+ /*}}}*/
+ void       Element::PositiveDegreeDayFast(bool isfirnwarming){/*{{{*/
+@@ -5027,6 +5036,18 @@
+ 	xDelete<IssmDouble>(basin_icefront_area);
+ }
+ /*}}}*/
++void       Element::SetSubglacialDischargeFromBasins(IssmDouble* basin_discharge){/*{{{*/
++
++	int basinid;
++	const int numvertices = this->GetNumberOfVertices();
++	IssmDouble qsg[MAXVERTICES];
++
++	this->GetInputValue(&basinid,FrontalForcingsBasinIdEnum);
++	for(int iv=0;iv<numvertices;iv++) qsg[iv] = (basinid<0) ? 0. : basin_discharge[basinid];
++
++	this->AddInput(FrontalForcingsSubglacialDischargeEnum,&qsg[0],P1Enum);
++}
++/*}}}*/
+ void       Element::SetBoolInput(Inputs* inputs,int enum_in,bool value){/*{{{*/
+ 
+ 	_assert_(inputs);
+diff -ruN a/src/c/classes/Elements/Element.h b/src/c/classes/Elements/Element.h
+--- a/src/c/classes/Elements/Element.h	2026-11-02 13:37:11.033349631 +0000
++++ b/src/c/classes/Elements/Element.h	2026-11-02 13:37:18.109118378 +0000
+@@ -189,6 +189,7 @@
+ 		void               ProjectGridDataToMesh(IssmDouble* griddata,IssmDouble* x_grid,IssmDouble* y_grid,int Nx,int Ny,int input_enum);
+ 		void               SmbDebrisEvatt();
+ 		void               RignotMeltParameterization();
++		void               SetSubglacialDischargeFromBasins(IssmDouble* basin_discharge);
+ 		void               ResultInterpolation(int* pinterpolation,int*nodesperelement,int* parray_size, int output_enum);
+ 		void               ResultToPatch(IssmDouble* values,int nodesperelement,int output_enum);
+ 		void               ResultToMatrix(IssmDouble* values,int ncols,int output_enum);
+@@ -291,6 +292,7 @@
+ 		virtual void        GetBarycenterFromLevelset(IssmDouble* platbar, IssmDouble* plongbar,IssmDouble phi,IssmDouble fraction1,IssmDouble fraction2,IssmDouble late, IssmDouble longe, int point1,int istrapeze1, IssmDouble planetradius)=0;
+ 
+ 		virtual IssmDouble GetIcefrontArea(){_error_("not implemented");};
++		virtual IssmDouble GetRunoffDischarge(){_error_("not implemented");};
+ 		virtual void       GetIcefrontCoordinates(IssmDouble** pxyz_front,IssmDouble* xyz_list,int levelsetenum)=0;
+ 		virtual DatasetInput* GetDatasetInput(int inputenum){_error_("not implemented");};
+ 		virtual Input*    GetInput(int inputenum)=0;
+diff -ruN a/src/c/classes/Elements/Tria.cpp b/src/c/classes/Elements/Tria.cpp
+--- a/src/c/classes/Elements/Tria.cpp	2026-11-02 13:37:11.033092536 +0000
++++ b/src/c/classes/Elements/Tria.cpp	2026-11-02 13:37:18.111127736 +0000
+@@ -2061,6 +2061,17 @@
+ 	return sqrt(pow(detm1,2) + pow(detm2,2) + pow(detm3,2))/2;
+ }
+ /*}}}*/
++IssmDouble Tria::GetRunoffDischarge(void){/*{{{*/
++
++	/*Runoff volume rate of this element [m^3/d] = runoff [m w.e./s] x ice-covered area [m^2] x 86400 s/d*/
++	if(!IsIceInElement()) return 0.;
++
++	IssmDouble runoff;
++	Input* runoff_input = this->GetInput(SmbRunoffEnum); _assert_(runoff_input);
++	runoff_input->GetInputAverage(&runoff);
++
++	return max(runoff,0.)*this->GetAreaIce()*86400.;
++}/*}}}*/
+ IssmDouble Tria::GetAreaIce(void){/*{{{*/
+ 
+ 	/*return area of element covered by ice*/
+diff -ruN a/src/c/classes/Elements/Tria.h b/src/c/classes/Elements/Tria.h
+--- a/src/c/classes/Elements/Tria.h	2026-11-02 13:37:11.033284842 +0000
++++ b/src/c/classes/Elements/Tria.h	2026-11-02 13:37:18.109309428 +0000
+@@ -95,6 +95,7 @@
+ 		void        GetBarycenterFromLevelset(IssmDouble* platbar, IssmDouble* plongbar,IssmDouble phi,IssmDouble fraction1,IssmDouble fraction2,IssmDouble late, IssmDouble longe, int point1,int istrapeze1, IssmDouble planetradius);
+ 		IssmDouble  GetTriangleAreaSpherical(IssmDouble xyz_list[3][3]);
+ 		IssmDouble  GetIcefrontArea();
++		IssmDouble  GetRunoffDischarge();
+ 		void	      GetIcefrontCoordinates(IssmDouble** pxyz_front,IssmDouble* xyz_list,int levelsetenum);
+ 		void        GetInputListOnVertices(IssmDouble* pvalue,Input* input,IssmDouble default_value);
+ 		void        GetInputListOnNodes(IssmDouble* pvalue,Input* input,IssmDouble default_value);
+diff -ruN a/src/c/modules/FrontalForcingsx/FrontalForcingsx.cpp b/src/c/modules/FrontalForcingsx/FrontalForcingsx.cpp
+--- a/src/c/modules/FrontalForcingsx/FrontalForcingsx.cpp	2026-11-02 13:37:11.033599419 +0000
++++ b/src/c/modules/FrontalForcingsx/FrontalForcingsx.cpp	2026-11-02 13:42:19.999223794 +0000
+@@ -17,16 +17,21 @@
+ 	switch(melt_parameterization){
+ 		case FrontalForcingsDefaultEnum:
+ 			break;
+-		case FrontalForcingsRignotarmaEnum:
++		case FrontalForcingsRignotarmaEnum:{
+ 			Thermalforcingarmax(femmodel);
+ 			bool isdischargearma;
+ 			femmodel->parameters->FindParam(&isdischargearma,FrontalForcingsIsDischargeARMAEnum);
+ 			if(isdischargearma==true) Subglacialdischargearmax(femmodel);
+-			/*Do not break here, call IcefrontAreax(),RignotMeltParameterizationx()*/
+-		case FrontalForcingsRignotEnum:
+ 			femmodel->IcefrontAreax();
+ 			femmodel->RignotMeltParameterizationx();
+-			break;
++			break;}
++		case FrontalForcingsRignotEnum:{
++			bool isdischargerunoff;
++			femmodel->parameters->FindParam(&isdischargerunoff,FrontalForcingsIsDischargeRunoffEnum);
++			if(isdischargerunoff==true) Subglacialdischargerunoffx(femmodel);
++			femmodel->IcefrontAreax();
++			femmodel->RignotMeltParameterizationx();
++			break;}
+ 		default:
+ 			_error_("Frontal forcings "<<EnumToStringx(melt_parameterization)<<" not supported yet");
+ 	}
+@@ -174,3 +179,33 @@
+    xDelete<IssmDouble>(polyparams);
+    xDelete<IssmDouble>(datebreaks);
+ }/*}}}*/
++void Subglacialdischargerunoffx(FemModel* femmodel){/*{{{*/
++
++	int numbasins;
++	femmodel->parameters->FindParam(&numbasins,FrontalForcingsNumberofBasinsEnum);
++	IssmDouble* local_discharge = xNewZeroInit<IssmDouble>(numbasins);
++	IssmDouble* basin_discharge = xNewZeroInit<IssmDouble>(numbasins);
++
++	/*Sum runoff volume rate [m^3/d] over the ice-covered area of each basin*/
++	for(Object* &object:femmodel->elements->objects){
++		Element* element = xDynamicCast<Element*>(object);
++		int basinid;
++		element->GetInputValue(&basinid,FrontalForcingsBasinIdEnum);
++		if(basinid<0 || basinid>=numbasins) continue;
++		local_discharge[basinid] += element->GetRunoffDischarge();
++	}
++
++	/*Sum across partitions*/
++	ISSM_MPI_Reduce(local_discharge,basin_discharge,numbasins,ISSM_MPI_DOUBLE,ISSM_MPI_SUM,0,IssmComm::GetComm());
++	ISSM_MPI_Bcast(basin_discharge,numbasins,ISSM_MPI_DOUBLE,0,IssmComm::GetComm());
++
++	/*Store as element input so RignotMeltParameterization works unchanged*/
++	for(Object* &object:femmodel->elements->objects){
++		Element* element = xDynamicCast<Element*>(object);
++		element->SetSubglacialDischargeFromBasins(basin_discharge);
++	}
++
++	/*Cleanup*/
++	xDelete<IssmDouble>(local_discharge);
++	xDelete<IssmDouble>(basin_discharge);
++}/*}}}*/
+diff -ruN a/src/c/modules/FrontalForcingsx/FrontalForcingsx.h b/src/c/modules/FrontalForcingsx/FrontalForcingsx.h
+--- a/src/c/modules/FrontalForcingsx/FrontalForcingsx.h	2026-11-02 13:42:19.971699125 +0000
++++ b/src/c/modules/FrontalForcingsx/FrontalForcingsx.h	2026-11-02 13:42:19.998474371 +0000
+@@ -7,6 +7,7 @@
+ /* local prototypes: */
+ void FrontalForcingsx(FemModel* femmodel);
+ void Subglacialdischargearmax(FemModel* femmodel);
++void Subglacialdischargerunoffx(FemModel* femmodel);
+ void Thermalforcingarmax(FemModel* femmodel);
+ 
+ #endif
+diff -ruN a/src/c/shared/Enum/Enum.vim b/src/c/shared/Enum/Enum.vim
+--- a/src/c/shared/Enum/Enum.vim	2026-11-02 13:37:11.033728019 +0000
++++ b/src/c/shared/Enum/Enum.vim	2026-11-02 13:37:18.107803202 +0000
+@@ -247,6 +247,7 @@
+ syn keyword cConstant FrontalForcingsARMAmonthtrendsEnum
+ syn keyword cConstant FrontalForcingsARMApolyparamsEnum
+ syn keyword cConstant FrontalForcingsIsDischargeARMAEnum
++syn keyword cConstant FrontalForcingsIsDischargeRunoffEnum
+ syn keyword cConstant FrontalForcingsNumberofBasinsEnum
+ syn keyword cConstant FrontalForcingsNumberofBreaksEnum
+ syn keyword cConstant FrontalForcingsNumberofMonthBreaksEnum
+diff -ruN a/src/c/shared/Enum/EnumDefinitions.h b/src/c/shared/Enum/EnumDefinitions.h
+--- a/src/c/shared/Enum/EnumDefinitions.h	2026-11-02 13:37:11.033668078 +0000
++++ b/src/c/shared/Enum/EnumDefinitions.h	2026-11-02 13:37:18.108294703 +0000
+@@ -241,6 +241,7 @@
+    FrontalForcingsARMAmonthtrendsEnum,
+    FrontalForcingsARMApolyparamsEnum,
+ 	FrontalForcingsIsDischargeARMAEnum,
++	FrontalForcingsIsDischargeRunoffEnum,
+ 	FrontalForcingsNumberofBasinsEnum,
+ 	FrontalForcingsNumberofBreaksEnum,
+ 	FrontalForcingsNumberofMonthBreaksEnum,
+diff -ruN a/src/m/classes/frontalforcingsrignot.m b/src/m/classes/frontalforcingsrignot.m
+--- a/src/m/classes/frontalforcingsrignot.m	2026-11-02 13:37:11.033867497 +0000
++++ b/src/m/classes/frontalforcingsrignot.m	2026-11-02 13:37:18.113067038 +0000
+@@ -9,6 +9,7 @@
+ 		num_basins           = 0;
+ 		subglacial_discharge = NaN;
+ 		thermalforcing       = NaN;
++		isdischargerunoff    = 0;
+ 	end
+ 	methods
+ 		function self = frontalforcingsrignot(varargin) % {{{
+@@ -34,18 +35,30 @@
+ 		end % }}}
+ 		function self = setdefaultparameters(self) % {{{
+ 
+-			basin_id             = NaN;
+-			num_basins           = 0;
+-			subglacial_discharge = NaN;
+-			thermalforcing       = NaN;
++			self.basin_id             = NaN;
++			self.num_basins           = 0;
++			self.subglacial_discharge = NaN;
++			self.thermalforcing       = NaN;
++			self.isdischargerunoff    = 0;
+ 		end % }}}
+ 		function md = checkconsistency(self,md,solution,analyses) % {{{
+ 			%Early return
+ 			if (~strcmp(solution,'TransientSolution') | md.transient.ismovingfront==0), return; end
+ 
++			md = checkfield(md,'fieldname','frontalforcings.isdischargerunoff','numel',1,'values',[0 1]);
+ 			md = checkfield(md,'fieldname','frontalforcings.num_basins','numel',1,'NaN',1,'Inf',1,'>',0);
+ 			md = checkfield(md,'fieldname','frontalforcings.basin_id','Inf',1,'>=',0,'<=',md.frontalforcings.num_basins,'size',[md.mesh.numberofelements 1]);
+-			md = checkfield(md,'fieldname','frontalforcings.subglacial_discharge','>=',0,'NaN',1,'Inf',1,'timeseries',1);
++			if self.isdischargerunoff
++				if md.transient.issmb==0
++					error('frontalforcings.isdischargerunoff requires md.transient.issmb=1');
++				end
++				%SmbRunoffEnum is only provided by some SMB models
++				if ~ismember(class(md.smb),{'SMBpddSicopolis','SMBgemb','SMBsemic','SMBgradientscomponents'})
++					error(['frontalforcings.isdischargerunoff not supported with smb class ' class(md.smb)]);
++				end
++			else
++				md = checkfield(md,'fieldname','frontalforcings.subglacial_discharge','>=',0,'NaN',1,'Inf',1,'timeseries',1);
++			end
+ 			md = checkfield(md,'fieldname','frontalforcings.thermalforcing','NaN',1,'Inf',1,'timeseries',1);
+ 
+ 		end % }}}
+@@ -55,12 +68,16 @@
+ 			fielddisplay(self,'num_basins', 'number of basins');
+ 			fielddisplay(self,'subglacial_discharge','sum of subglacial discharge for each basin [m^3/d]');
+ 			fielddisplay(self,'thermalforcing','thermal forcing [∘C]');
++			fielddisplay(self,'isdischargerunoff','if 1, discharge = basin-integrated SMB runoff over ice-covered area; subglacial_discharge is ignored');
+ 		end % }}}
+ 		function marshall(self,prefix,md,fid) % {{{
+ 			WriteData(fid,prefix,'name','md.frontalforcings.parameterization','data',2,'format','Integer');
+ 			WriteData(fid,prefix,'object',self,'fieldname','basin_id','data',self.basin_id-1,'name','md.frontalforcings.basin_id','format','IntMat','mattype',2); %0-indexed
+ 			WriteData(fid,prefix,'object',self,'fieldname','num_basins','format','Integer');
+-			WriteData(fid,prefix,'object',self,'fieldname','subglacial_discharge','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			WriteData(fid,prefix,'object',self,'fieldname','isdischargerunoff','format','Boolean');
++			if ~self.isdischargerunoff
++				WriteData(fid,prefix,'object',self,'fieldname','subglacial_discharge','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
++			end
+ 			WriteData(fid,prefix,'object',self,'fieldname','thermalforcing','format','DoubleMat','mattype',1,'timeserieslength',md.mesh.numberofvertices+1,'yts',md.constants.yts);
+ 		end % }}}
+ 	end
