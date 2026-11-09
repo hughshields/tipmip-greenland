@@ -1,18 +1,18 @@
-steps=[2];
+steps = [7];
 
 %Run Options{{{
 
 % Cluster Options (for forward transients and inversions)
-cluster = 0; % 0 for 'totten', 1 for 'andes', 2 for epica
+cluster = 1; % 0 for 'totten', 1 for 'andes', 2 for epica
 clusternames = {'totten', 'andes', 'local'};
 clustername = clusternames{cluster+1};
 
 % Run parameters
 max_run_time = 168; % hours
-mem_alloc = 128; % in Gb
+mem_alloc = 750; % in Gb
 num_cpus = 64; % number of cores
 interactive = 1;
-loadonly = 0;
+loadonly = 1;
 
 % Folder to store models
 folder = 'models';
@@ -698,7 +698,7 @@ if perform(org,['Greenland_TIPMIP_Ramp_Run']),% {{{
 	md.settings.output_frequency=10;
 
 	md.verbose.solution = true;
-	%		md.verbose=verbose('all');
+%  md.verbose=verbose('all');
 
 	md.transient.requested_outputs={'default','IceVolume','IceVolumeScaled','IceVolumeAboveFloatation','IceVolumeAboveFloatationScaled','MaskIceLevelset','MaskOceanLevelset','SmbMassBalance','GroundedArea','GroundedAreaScaled','FloatingArea','FloatingAreaScaled','TotalSmb','TotalSmbScaled', 'BasalforcingsGroundediceMeltingRate', 'TotalGroundedBmb', 'TotalGroundedBmbScaled', 'BasalforcingsFloatingiceMeltingRate','TotalFloatingBmb', 'TotalFloatingBmbScaled', 'TotalCalvingFluxLevelset', 'TotalCalvingMeltingFluxLevelset','Calvingratex','Calvingratey','CalvingMeltingrate','GroundinglineMassFlux'};
 
@@ -724,3 +724,181 @@ if perform(org,['Greenland_TIPMIP_Ramp_Run']),% {{{
 
 end%}}}
 
+if perform(org,['Greenland_TIPMIP_Ramp_Run_GIA']),% {{{
+
+	md=loadmodel(org,['Greenland_TIPMIP_Ramp_Prep']);
+	
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% Regional elastic GRD: deformation only.
+	md.solidearth.settings.isgrd          = 1;
+	md.solidearth.settings.grdmodel       = 1;
+	md.solidearth.settings.elastic        = 1;
+	md.solidearth.settings.selfattraction = 1;
+
+	% Disable ocean mass conservation and the sea-level equation.
+	md.solidearth.settings.grdocean       = 0;
+	md.solidearth.settings.sealevelloading = 0;
+
+	% Required to execute GRD during a transient run.
+	md.transient.isslc = 1;
+
+	viscous=0; %switch this to 0 if you don't want viscous deformation
+
+	md.initialization.sealevel = zeros(md.mesh.numberofvertices,1);
+
+	if ~viscous
+		%elastic love numbers:
+		md.solidearth.lovenumbers=lovenumbers('maxdeg',1000);
+		md.solidearth.lovenumbers.timefreq=[0];
+		md.solidearth.settings.viscous = 0;
+
+	else
+		%viscoelastic love numbers:
+		md.solidearth.settings.viscous = 1;
+		md.solidearth.settings.timeacc = md.timestepping.time_step;
+		md.solidearth.settings.viscoussampling = 10;
+		filename='GIAMaxwell_lnb_Caron18exp.mat';
+		mindeg=1;
+		maxdeg=1000;
+		lt=[];
+		load(filename);
+		md.solidearth.lovenumbers.h=ht;
+		md.solidearth.lovenumbers.h(1:mindeg,:)=0;
+		md.solidearth.lovenumbers.k=kt;
+		md.solidearth.lovenumbers.k(1:mindeg,:)=-1;
+		md.solidearth.lovenumbers.l=lt;
+		md.solidearth.lovenumbers.l(1:mindeg,:)=0;
+		md.solidearth.lovenumbers.th=tht(1:maxdeg+1,:);
+		md.solidearth.lovenumbers.tk=tkt(1:maxdeg+1,:);
+		md.solidearth.lovenumbers.tl=tlt(1:maxdeg+1,:);
+		md.solidearth.lovenumbers.pmtf_colinear=pmtf1;
+		md.solidearth.lovenumbers.pmtf_ortho=pmtf2;
+		md.solidearth.lovenumbers.timefreq=time;
+	end
+
+	md.solidearth.requested_outputs = {'Sealevel','Bed'};
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+	disp('   Updating start/end times');
+	md.timestepping.time_step=0.01;
+	md.timestepping.start_time = 38;
+	md.timestepping.final_time = 194;
+	md.settings.output_frequency=10;
+
+	md.verbose.solution = true;
+%  md.verbose=verbose('all');
+
+	md.transient.requested_outputs={'default','IceVolume','IceVolumeScaled','IceVolumeAboveFloatation','IceVolumeAboveFloatationScaled','MaskIceLevelset','MaskOceanLevelset','SmbMassBalance','GroundedArea','GroundedAreaScaled','FloatingArea','FloatingAreaScaled','TotalSmb','TotalSmbScaled', 'BasalforcingsGroundediceMeltingRate', 'TotalGroundedBmb', 'TotalGroundedBmbScaled', 'BasalforcingsFloatingiceMeltingRate','TotalFloatingBmb', 'TotalFloatingBmbScaled', 'TotalCalvingFluxLevelset', 'TotalCalvingMeltingFluxLevelset','Calvingratex','Calvingratey','CalvingMeltingrate','GroundinglineMassFlux'};
+
+	md.cluster=cluster;
+
+	md.toolkits.DefaultAnalysis=bcgslbjacobioptions();% biconjugate gradient with block Jacobi preconditioner
+	md.settings.solver_residue_threshold = 1.e-4;
+	md.masstransport.stabilization = 2;
+
+	md.miscellaneous.name = org.steps(org.currentstep).string;
+	md.cluster.interactive=interactive;
+	md.settings.waitonlock=0;
+
+	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
+
+	if md.cluster.interactive == 1
+		md=loadresultsfromcluster(md);
+	end
+
+	if (loadonly == 1) | (md.cluster.interactive == 1)
+		savemodel(org,md);
+	end
+
+end%}}}
+
+if perform(org,['Greenland_TIPMIP_Stab2.0_Prep']),% {{{
+	
+	md = loadmodel(org,['Greenland_TIPMIP_Ramp_Run']);
+
+	idx = find(abs([md.results.TransientSolution.time] - 94) < 1e-6);
+	assert(isscalar(idx), 'no unique ramp output at t=94');
+
+	% Build the new forcings from the PRISTINE ramp model (before restarting), so that
+	% smb.s0t/s0p are still the 2007 reference surface, not the evolved t=94 surface
+	disp('   Building SMB forcing');
+	smb_stab2 = interpTIPMIPGreenlandSMB(md, 'stab2.0');
+	disp('   Building frontal forcing');
+	ocn_stab2 = interpTIPMIPGreenlandOcn(md, 'stab2.0');
+
+	% Keep only the branch step, restart from it, then drop all ramp results
+	md.results.TransientSolution = md.results.TransientSolution(idx);
+	md = transientrestart(md, 1);
+	md.results = struct();   % removes TransientSolution2 (the copy transientrestart makes) too
+
+	% Swap in the stab forcing, change nothing else in smb / frontalforcings
+	md.smb.temperature_anomaly        = smb_stab2.temperature_anomaly;
+	md.smb.precipitation_anomaly      = smb_stab2.precipitation_anomaly;
+	md.frontalforcings.thermalforcing = ocn_stab2.thermalforcing;
+
+	md.timestepping.start_time = 94;   % overwrite any float drift from results.time
+	md.timestepping.final_time = 294;
+
+	savemodel(org,md);
+end%}}}
+if perform(org,['Greenland_TIPMIP_Stab2.0_Run_2c']),% {{{
+
+	md=loadmodel(org,['Greenland_TIPMIP_Stab2.0_Prep']);
+	
+	md.miscellaneous.name = org.steps(org.currentstep).string;
+	
+	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
+	
+	if md.cluster.interactive == 1
+		md=loadresultsfromcluster(md);
+	end
+
+	if (loadonly == 1) | (md.cluster.interactive == 1)
+		savemodel(org,md);
+	end
+
+end%}}}
+if perform(org,['Greenland_TIPMIP_Stab4.0_Prep']),% {{{
+	
+	md = loadmodel(org,['Greenland_TIPMIP_Ramp_Run']);
+
+	% Build the new forcings from the PRISTINE ramp model (before restarting), so that
+	% smb.s0t/s0p are still the 2007 reference surface, not the evolved t=94 surface
+	disp('   Building SMB forcing');
+	smb_stab4 = interpTIPMIPGreenlandSMB(md, 'stab4.0');
+	disp('   Building frontal forcing');
+	ocn_stab4 = interpTIPMIPGreenlandOcn(md, 'stab4.0');
+
+	% Keep only the last step (194), restart from it, then drop all ramp results
+	md.results.TransientSolution = md.results.TransientSolution(end);
+	md = transientrestart(md, 1);
+	md.results = struct();   % removes TransientSolution2 (the copy transientrestart makes) too
+
+	% Swap in the stab forcing, change nothing else in smb / frontalforcings
+	md.smb.temperature_anomaly        = smb_stab4.temperature_anomaly;
+	md.smb.precipitation_anomaly      = smb_stab4.precipitation_anomaly;
+	md.frontalforcings.thermalforcing = ocn_stab4.thermalforcing;
+
+	md.timestepping.start_time = 194;   % overwrite any float drift from results.time
+	md.timestepping.final_time = 394;
+
+	savemodel(org,md);
+end%}}}
+if perform(org,['Greenland_TIPMIP_Stab4.0_Run']),% {{{
+
+	md=loadmodel(org,['Greenland_TIPMIP_Stab4.0_Prep']);
+	
+	md.miscellaneous.name = org.steps(org.currentstep).string;
+
+	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
+
+	if md.cluster.interactive == 1
+		md=loadresultsfromcluster(md);
+	end
+
+	if (loadonly == 1) | (md.cluster.interactive == 1)
+		savemodel(org,md);
+	end
+
+end%}}}
