@@ -11,18 +11,22 @@ function smb = interpTIPMIPGreenlandSMB(md, scenario)
 	%-------
 	%.. code-block:: matlab
 	%	md.smb = interpTIPMIPGreenlandSMB(md,'ramp');
+	%	md.timestepping.start_time = 38; md.timestepping.final_time = 194;
+	%	md.timestepping.time_step  = 0.01;   % the time stamps are chosen for this step
 	%	md.smb.rlaps = 5;  % e.g. Tier 2 lapse-rate (melt-elevation feedback) variations
 	%
 	%Inputs
 	%------
 	%md: ISSM model
-	%scenario: 'ramp' | 'stab2.0' | 'stab4.0'
+	%scenario: 'ramp' | 'stab2.0' | 'stab4.0' | 'stab4.0-200y-rev2.0'
 	%
 	%Model time (decimal years, elapsed ESM ramp time: ESM year n spans n-1 to n,
 	%matching Table 2 of the TIPMIP-ICE SHEETS protocol):
 	%	ramp    : forcing years 39-194 -> t = 38  to 194  (156 yr)
 	%	stab2.0 : forcing years 95-294 -> t = 94  to 294  (200 yr, branches at ramp yr 94)
 	%	stab4.0 : forcing years 195-394-> t = 194 to 394  (200 yr, branches at ramp yr 194)
+	%	stab4.0-200y-rev2.0 : the 2 C stabilization forcing (same fields as stab2.0), re-timed to
+	%	                      t = 394 to 594 (200 yr, drop back to 2 C after 200 yr at 4 C)
 	%
 	%Method (per grid vertex and per calendar month m)
 	%	T(t) = Tclim_RACMO(m) + [ dT_ESM(t) - mean_{ESM yrs 37-41} dT_ESM(m) ]
@@ -73,14 +77,20 @@ function smb = interpTIPMIPGreenlandSMB(md, scenario)
 	kg2m_ice_yr = md.constants.yts/md.materials.rho_ice;            % kg m-2 s-1 -> m ice yr-1
 
 	switch scenario
+		% t_branch: model time at which the scenario's first forcing year starts
+		% file_t0 : time encoded in the stab file name (_ext_YYYYMM_...) = ramp branch time of that file
 		case 'ramp'
-			scen_dir = ramp_dir;   t_branch = 0;   yr_range = [shift_year Inf];
+			scen_dir = ramp_dir;   t_branch = 0;   file_t0 = 0;   yr_range = [shift_year Inf];
 		case 'stab2.0'
-			scen_dir = 'esm-up2p0-gwl2p0'; t_branch = 94;  yr_range = [1 stab_years];
+			scen_dir = 'esm-up2p0-gwl2p0'; t_branch = 94;  file_t0 = 94;  yr_range = [1 stab_years];
 		case 'stab4.0'
-			scen_dir = 'esm-up2p0-gwl4p0'; t_branch = 194; yr_range = [1 stab_years];
+			scen_dir = 'esm-up2p0-gwl4p0'; t_branch = 194; file_t0 = 194; yr_range = [1 stab_years];
+		case 'stab4.0-200y-rev2.0'
+			% reversal 4 C -> 2 C after 200 yr of 4 C stabilization (t = 194..394): same 2 C
+			% stabilization forcing as stab2.0 (file starts at 94) but run from t = 394 to 594
+			scen_dir = 'esm-up2p0-gwl2p0'; t_branch = 394; file_t0 = 94;  yr_range = [1 stab_years];
 		otherwise
-			error('scenario ''%s'' not supported (use ramp, stab2.0, stab4.0)', scenario);
+			error('scenario ''%s'' not supported (use ramp, stab2.0, stab4.0, stab4.0-200y-rev2.0)', scenario);
 	end
 
 	ramp_pr_file  = findSingleFile(fullfile(tipmipdir, ramp_dir, 'pr_*.nc'));
@@ -99,8 +109,8 @@ function smb = interpTIPMIPGreenlandSMB(md, scenario)
 		if any(abs(rng_pr - rng_tas) > 1e-6)
 			error('pr and tas stab files cover different periods: %s vs %s', scen_pr_file, scen_tas_file);
 		end
-		if abs(rng_pr(1) - t_branch) > 1e-6
-			error('%s starts at t=%g but %s should branch at t=%d', scen_pr_file, rng_pr(1), scenario, t_branch);
+		if abs(rng_pr(1) - file_t0) > 1e-6
+			error('%s starts at t=%g but scenario %s expects a file starting at t=%d', scen_pr_file, rng_pr(1), scenario, file_t0);
 		end
 		ext_range = rng_pr; % [t_start t_end] in elapsed years
 	end
