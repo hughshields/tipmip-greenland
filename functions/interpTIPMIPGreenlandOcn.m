@@ -5,8 +5,7 @@ function frontalforcing = interpTIPMIPGreenlandOcn(md, scenario)
 	%frontalforcingsrignot object: static present-day EN4 thermal forcing climatology
 	%plus shifted ESM thermal forcing anomalies, as one monthly time series.
 	%
-	%Requires the 'runoff discharge' ISSM patches (rignot_runoff_discharge.patch and
-	%rignot_runoff_monthly_discharge.patch):
+	%Requires the 'runoff discharge' ISSM patch (rignot_runoff_discharge.patch):
 	%TIPMIP does not provide subglacial discharge, so frontalforcings.isdischargerunoff
 	%is set to 1 and the discharge is computed in ISSM from the SMB runoff
 	%(md.transient.issmb must be 1 and md.smb an SMB model that provides runoff,
@@ -49,12 +48,6 @@ function frontalforcing = interpTIPMIPGreenlandOcn(md, scenario)
 	%	                      N+1, so no element is ever labelled 0 (-> -1 after marshalling).
 	%	num_basins            N+1 (N ISMIP basins + 1 background basin)
 	%	isdischargerunoff     1 (subglacial_discharge is not used / not marshalled)
-	%	discharge_monthlyfrac (N+1) x 12 seasonal cycle of the discharge: the SMB runoff is an
-	%	                      annual-mean rate, ISSM multiplies the basin discharge by
-	%	                      12*discharge_monthlyfrac(basin,month) (mean-preserving). Fractions
-	%	                      are the 1992-2021 RACMO2.3p2-ERA monthly basin subglacial discharge
-	%	                      (ISMIP7 OCX SDBN1-1000m sgd/v1) normalised to sum to 1 per basin;
-	%	                      basins without RACMO data (and the background basin) get 1/12.
 	%}
 
 	if nargin < 2, error('usage: interpTIPMIPGreenlandOcn(md, scenario)'); end
@@ -70,7 +63,6 @@ function frontalforcing = interpTIPMIPGreenlandOcn(md, scenario)
 			error('machine not supported yet, please provide your own paths');
 	end
 	en4_tf_dir = fullfile(ismip7dir, 'GrIS', 'OCX', 'EN4', 'ocean-1000m', 'tf', 'v1');
-	sgd_dir    = fullfile(ismip7dir, 'GrIS', 'OCX', 'RACMO2.3p2-ERA', 'SDBN1-1000m', 'sgd', 'v1');
 	basin_file = fullfile(ismip7dir, 'tools', 'ismip7-gris-ocean-forcing', 'subglacial_discharge_basins_ismip.nc');
 
 	% ------------------------------------------------------------------
@@ -236,31 +228,17 @@ function frontalforcing = interpTIPMIPGreenlandOcn(md, scenario)
 	end
 
 	% ------------------------------------------------------------------
-	% 5) Seasonal cycle of the discharge from the RACMO 30-yr monthly basin discharge
-	% ------------------------------------------------------------------
-	disp(['   == Loading RACMO2.3p2-ERA subglacial discharge climatology ' num2str(clim_years(1)) '-' num2str(clim_years(end))]);
-	frac = sgdMonthlyFrac(sgd_dir, clim_years, md, cumdays, x_basin, y_basin, basin_data_remapped, nbasins_ismip);
-	nodata = any(isnan(frac), 2);
-	if any(nodata)
-		disp(['   -- ' num2str(sum(nodata)) ' of ' num2str(nbasins_ismip) ' basins without usable RACMO discharge on the mesh domain: flat seasonality (1/12)']);
-	end
-	frac(nodata,:) = 1/12;
-	discharge_monthlyfrac = [frac; ones(1,12)/12];   % + background basin (N+1)
-
-	% ------------------------------------------------------------------
-	% 6) Assemble the frontalforcingsrignot object
+	% 5) Assemble the frontalforcingsrignot object
 	% ------------------------------------------------------------------
 	frontalforcing = frontalforcingsrignot();
-	if ~isprop(frontalforcing, 'isdischargerunoff') || ~isprop(frontalforcing, 'discharge_monthlyfrac')
-		error(['frontalforcingsrignot lacks isdischargerunoff/discharge_monthlyfrac: apply ' ...
-			'rignot_runoff_discharge.patch and rignot_runoff_monthly_discharge.patch ' ...
-			'(TIPMIP has no subglacial discharge data)']);
+	if ~isprop(frontalforcing, 'isdischargerunoff')
+		error(['frontalforcingsrignot has no isdischargerunoff property: apply ' ...
+			'rignot_runoff_discharge.patch (TIPMIP has no subglacial discharge data)']);
 	end
 	frontalforcing.thermalforcing    = TF;
 	frontalforcing.basin_id          = basin_id;
 	frontalforcing.num_basins        = num_basins;
 	frontalforcing.isdischargerunoff = 1;   % discharge from basin-integrated SMB runoff
-	frontalforcing.discharge_monthlyfrac = discharge_monthlyfrac;
 
 end
 
@@ -396,74 +374,4 @@ function clim = enMonthlyClim(dirname, years, md, cumdays)
 	end
 	fprintf('\n');
 	clim = acc/numel(years);
-end
-
-% ----------------------------------------------------------------------
-function ix = nearestIndex(xref, xq)
-	%index of the nearest reference coordinate for every query coordinate
-	[~, ix] = min(abs(xref(:) - xq(:)'), [], 1);
-	ix = ix(:);
-end
-
-% ----------------------------------------------------------------------
-function frac = sgdMonthlyFrac(dirname, years, md, cumdays, x_basin, y_basin, basin_map, nb)
-	%30-yr monthly climatology of the basin subglacial discharge (yearly RACMO2.3p2-ERA
-	%files sgd_*_<year>.nc, 12 monthly records each, [m3 s-1]) normalised per basin so
-	%that the 12 months sum to 1 -> nb x 12 (calendar-month order), NaN rows for basins
-	%with no usable data in the mesh window.
-	%The sgd field is a basin-integrated total repeated in every cell of its basin, so the
-	%basin value is the mean over the basin's cells in the (cropped) grid.
-
-	% every file in the directory, restricted to the requested years and sorted by the
-	% year in the file name (same approach as interpISMIP7GreenlandOcn)
-	files = dir(fullfile(dirname, '*.nc'));
-	if isempty(files), error('No subglacial discharge files found in %s', dirname); end
-	fyears = cellfun(@(n) str2double(regexp(n, '\d{4}(?=\.nc$)', 'match', 'once')), {files.name});
-	sel    = ismember(fyears, years);
-	files  = files(sel);  fyears = fyears(sel);
-	[fyears, ord] = sort(fyears);  files = files(ord);
-	if ~isequal(fyears(:)', years(:)')
-		error('Subglacial discharge files for %d-%d not all found in %s (found %d of %d)', ...
-			years(1), years(end), dirname, numel(fyears), numel(years));
-	end
-
-	clim_sum = zeros(nb, 12);
-	clim_cnt = zeros(nb, 12);
-	crop = [];
-	lab  = [];
-	for f = 1:numel(files)
-		file = fullfile(files(f).folder, files(f).name);
-		mon  = enMonths(file, cumdays);
-		if numel(mon) ~= 12 || ~isequal(sort(mon(:))', 1:12)
-			error('%s does not hold 12 distinct calendar months', file);
-		end
-		if isempty(crop)
-			crop = getCrop(file, md);
-			% basin label of every cell of the cropped sgd grid (nearest raster cell);
-			% 0 = no basin (cells outside the raster get the nearest border cell)
-			ix  = nearestIndex(x_basin, crop.x);
-			iy  = nearestIndex(y_basin, crop.y);
-			lab = basin_map(ix, iy);
-			lab = lab(:);
-		end
-		S = ncread(file, 'sgd', [crop.id1x crop.id1y 1], ...
-			[crop.id2x-crop.id1x+1, crop.id2y-crop.id1y+1, 12]); % single
-		for j = 1:12
-			v  = double(S(:,:,j));  v = v(:);
-			ok = lab > 0 & ~isnan(v) & abs(v) < 1e19;
-			if ~any(ok), continue; end
-			s   = accumarray(lab(ok), v(ok), [nb 1]);
-			c   = accumarray(lab(ok), 1,     [nb 1]);
-			has = c > 0;
-			clim_sum(has, mon(j)) = clim_sum(has, mon(j)) + s(has)./c(has);
-			clim_cnt(has, mon(j)) = clim_cnt(has, mon(j)) + 1;
-		end
-		fprintf('\r   -- sgd %d', fyears(f));
-	end
-	fprintf('\n');
-
-	clim = clim_sum ./ clim_cnt;          % NaN where a basin/month never had data
-	tot  = sum(clim, 2);
-	frac = clim ./ tot;                   % nb x 12
-	frac(~(tot > 0) | any(isnan(frac),2), :) = NaN;
 end
