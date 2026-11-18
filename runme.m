@@ -1,4 +1,4 @@
-steps = [7];
+steps = [10];
 
 %Run Options{{{
 
@@ -9,10 +9,10 @@ clustername = clusternames{cluster+1};
 
 % Run parameters
 max_run_time = 168; % hours
-mem_alloc = 750; % in Gb
+mem_alloc = 500; % in Gb
 num_cpus = 64; % number of cores
 interactive = 1;
-loadonly = 1;
+loadonly = 0;
 
 % Folder to store models
 folder = 'models';
@@ -687,7 +687,7 @@ if perform(org,['Greenland_TIPMIP_Ramp_Prep']),% {{{
 
 	savemodel(org,md);
 end%}}}
-if perform(org,['Greenland_TIPMIP_Ramp_Run']),% {{{
+if perform(org,['Greenland_TIPMIP_Ramp_Run_test']),% {{{
 
 	md=loadmodel(org,['Greenland_TIPMIP_Ramp_Prep']);
 	
@@ -724,94 +724,94 @@ if perform(org,['Greenland_TIPMIP_Ramp_Run']),% {{{
 
 end%}}}
 
-if perform(org,['Greenland_TIPMIP_Ramp_Run_GIA']),% {{{
-
-	md=loadmodel(org,['Greenland_TIPMIP_Ramp_Prep']);
-	
-	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-	% Regional elastic GRD: deformation only.
-	md.solidearth.settings.isgrd          = 1;
-	md.solidearth.settings.grdmodel       = 1;
-	md.solidearth.settings.elastic        = 1;
-	md.solidearth.settings.selfattraction = 1;
-
-	% Disable ocean mass conservation and the sea-level equation.
-	md.solidearth.settings.grdocean       = 0;
-	md.solidearth.settings.sealevelloading = 0;
-
-	% Required to execute GRD during a transient run.
-	md.transient.isslc = 1;
-
-	viscous=0; %switch this to 0 if you don't want viscous deformation
-
-	md.initialization.sealevel = zeros(md.mesh.numberofvertices,1);
-
-	if ~viscous
-		%elastic love numbers:
-		md.solidearth.lovenumbers=lovenumbers('maxdeg',1000);
-		md.solidearth.lovenumbers.timefreq=[0];
-		md.solidearth.settings.viscous = 0;
-
-	else
-		%viscoelastic love numbers:
-		md.solidearth.settings.viscous = 1;
-		md.solidearth.settings.timeacc = md.timestepping.time_step;
-		md.solidearth.settings.viscoussampling = 10;
-		filename='GIAMaxwell_lnb_Caron18exp.mat';
-		mindeg=1;
-		maxdeg=1000;
-		lt=[];
-		load(filename);
-		md.solidearth.lovenumbers.h=ht;
-		md.solidearth.lovenumbers.h(1:mindeg,:)=0;
-		md.solidearth.lovenumbers.k=kt;
-		md.solidearth.lovenumbers.k(1:mindeg,:)=-1;
-		md.solidearth.lovenumbers.l=lt;
-		md.solidearth.lovenumbers.l(1:mindeg,:)=0;
-		md.solidearth.lovenumbers.th=tht(1:maxdeg+1,:);
-		md.solidearth.lovenumbers.tk=tkt(1:maxdeg+1,:);
-		md.solidearth.lovenumbers.tl=tlt(1:maxdeg+1,:);
-		md.solidearth.lovenumbers.pmtf_colinear=pmtf1;
-		md.solidearth.lovenumbers.pmtf_ortho=pmtf2;
-		md.solidearth.lovenumbers.timefreq=time;
-	end
-
-	md.solidearth.requested_outputs = {'Sealevel','Bed'};
-	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-	disp('   Updating start/end times');
-	md.timestepping.time_step=0.01;
-	md.timestepping.start_time = 38;
-	md.timestepping.final_time = 194;
-	md.settings.output_frequency=10;
-
-	md.verbose.solution = true;
-%  md.verbose=verbose('all');
-
-	md.transient.requested_outputs={'default','IceVolume','IceVolumeScaled','IceVolumeAboveFloatation','IceVolumeAboveFloatationScaled','MaskIceLevelset','MaskOceanLevelset','SmbMassBalance','GroundedArea','GroundedAreaScaled','FloatingArea','FloatingAreaScaled','TotalSmb','TotalSmbScaled', 'BasalforcingsGroundediceMeltingRate', 'TotalGroundedBmb', 'TotalGroundedBmbScaled', 'BasalforcingsFloatingiceMeltingRate','TotalFloatingBmb', 'TotalFloatingBmbScaled', 'TotalCalvingFluxLevelset', 'TotalCalvingMeltingFluxLevelset','Calvingratex','Calvingratey','CalvingMeltingrate','GroundinglineMassFlux'};
-
-	md.cluster=cluster;
-
-	md.toolkits.DefaultAnalysis=bcgslbjacobioptions();% biconjugate gradient with block Jacobi preconditioner
-	md.settings.solver_residue_threshold = 1.e-4;
-	md.masstransport.stabilization = 2;
-
-	md.miscellaneous.name = org.steps(org.currentstep).string;
-	md.cluster.interactive=interactive;
-	md.settings.waitonlock=0;
-
-	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
-
-	if md.cluster.interactive == 1
-		md=loadresultsfromcluster(md);
-	end
-
-	if (loadonly == 1) | (md.cluster.interactive == 1)
-		savemodel(org,md);
-	end
-
-end%}}}
+%if perform(org,['Greenland_TIPMIP_Ramp_Run_GIA']),% {{{
+%
+%	md=loadmodel(org,['Greenland_TIPMIP_Ramp_Prep']);
+%	
+%	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%	% Regional elastic GRD: deformation only.
+%	md.solidearth.settings.isgrd          = 1;
+%	md.solidearth.settings.grdmodel       = 1;
+%	md.solidearth.settings.elastic        = 1;
+%	md.solidearth.settings.selfattraction = 1;
+%
+%	% Disable ocean mass conservation and the sea-level equation.
+%	md.solidearth.settings.grdocean       = 0;
+%	md.solidearth.settings.sealevelloading = 0;
+%
+%	% Required to execute GRD during a transient run.
+%	md.transient.isslc = 1;
+%
+%	viscous=0; %switch this to 0 if you don't want viscous deformation
+%
+%	md.initialization.sealevel = zeros(md.mesh.numberofvertices,1);
+%
+%	if ~viscous
+%		%elastic love numbers:
+%		md.solidearth.lovenumbers=lovenumbers('maxdeg',1000);
+%		md.solidearth.lovenumbers.timefreq=[0];
+%		md.solidearth.settings.viscous = 0;
+%
+%	else
+%		%viscoelastic love numbers:
+%		md.solidearth.settings.viscous = 1;
+%		md.solidearth.settings.timeacc = md.timestepping.time_step;
+%		md.solidearth.settings.viscoussampling = 10;
+%		filename='GIAMaxwell_lnb_Caron18exp.mat';
+%		mindeg=1;
+%		maxdeg=1000;
+%		lt=[];
+%		load(filename);
+%		md.solidearth.lovenumbers.h=ht;
+%		md.solidearth.lovenumbers.h(1:mindeg,:)=0;
+%		md.solidearth.lovenumbers.k=kt;
+%		md.solidearth.lovenumbers.k(1:mindeg,:)=-1;
+%		md.solidearth.lovenumbers.l=lt;
+%		md.solidearth.lovenumbers.l(1:mindeg,:)=0;
+%		md.solidearth.lovenumbers.th=tht(1:maxdeg+1,:);
+%		md.solidearth.lovenumbers.tk=tkt(1:maxdeg+1,:);
+%		md.solidearth.lovenumbers.tl=tlt(1:maxdeg+1,:);
+%		md.solidearth.lovenumbers.pmtf_colinear=pmtf1;
+%		md.solidearth.lovenumbers.pmtf_ortho=pmtf2;
+%		md.solidearth.lovenumbers.timefreq=time;
+%	end
+%
+%	md.solidearth.requested_outputs = {'Sealevel','Bed'};
+%	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%
+%	disp('   Updating start/end times');
+%	md.timestepping.time_step=0.01;
+%	md.timestepping.start_time = 38;
+%	md.timestepping.final_time = 194;
+%	md.settings.output_frequency=10;
+%
+%	md.verbose.solution = true;
+%%  md.verbose=verbose('all');
+%
+%	md.transient.requested_outputs={'default','IceVolume','IceVolumeScaled','IceVolumeAboveFloatation','IceVolumeAboveFloatationScaled','MaskIceLevelset','MaskOceanLevelset','SmbMassBalance','GroundedArea','GroundedAreaScaled','FloatingArea','FloatingAreaScaled','TotalSmb','TotalSmbScaled', 'BasalforcingsGroundediceMeltingRate', 'TotalGroundedBmb', 'TotalGroundedBmbScaled', 'BasalforcingsFloatingiceMeltingRate','TotalFloatingBmb', 'TotalFloatingBmbScaled', 'TotalCalvingFluxLevelset', 'TotalCalvingMeltingFluxLevelset','Calvingratex','Calvingratey','CalvingMeltingrate','GroundinglineMassFlux'};
+%
+%	md.cluster=cluster;
+%
+%	md.toolkits.DefaultAnalysis=bcgslbjacobioptions();% biconjugate gradient with block Jacobi preconditioner
+%	md.settings.solver_residue_threshold = 1.e-4;
+%	md.masstransport.stabilization = 2;
+%
+%	md.miscellaneous.name = org.steps(org.currentstep).string;
+%	md.cluster.interactive=interactive;
+%	md.settings.waitonlock=0;
+%
+%	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
+%
+%	if md.cluster.interactive == 1
+%		md=loadresultsfromcluster(md);
+%	end
+%
+%	if (loadonly == 1) | (md.cluster.interactive == 1)
+%		savemodel(org,md);
+%	end
+%
+%end%}}}
 
 if perform(org,['Greenland_TIPMIP_Stab2.0_Prep']),% {{{
 	
@@ -842,7 +842,7 @@ if perform(org,['Greenland_TIPMIP_Stab2.0_Prep']),% {{{
 
 	savemodel(org,md);
 end%}}}
-if perform(org,['Greenland_TIPMIP_Stab2.0_Run_2c']),% {{{
+if perform(org,['Greenland_TIPMIP_Stab2.0_Run']),% {{{
 
 	md=loadmodel(org,['Greenland_TIPMIP_Stab2.0_Prep']);
 	
@@ -902,3 +902,114 @@ if perform(org,['Greenland_TIPMIP_Stab4.0_Run']),% {{{
 	end
 
 end%}}}
+
+if perform(org,['Greenland_TIPMIP_Stab4.0-200y-Rev2.0_Prep']),% {{{
+	
+	ramp = loadmodel(org,['Greenland_TIPMIP_Ramp_Prep']);
+	md = loadmodel(org,['Greenland_TIPMIP_Stab4.0_Run']);
+
+	% Build the new forcings from the PRISTINE ramp model (before restarting), so that
+	% smb.s0t/s0p are still the 2007 reference surface, not the evolved t=94 surface
+	disp('   Building SMB forcing');
+	smb_stab4_rev2 = interpTIPMIPGreenlandSMB(ramp, 'stab4.0-200y-rev2.0');
+	disp('   Building frontal forcing');
+	ocn_stab4_rev2 = interpTIPMIPGreenlandOcn(ramp, 'stab4.0-200y-rev2.0');
+
+	% Keep only the last step (194), restart from it, then drop all ramp results
+	md.results.TransientSolution = md.results.TransientSolution(end);
+	md = transientrestart(md, 1);
+	md.results = struct();   % removes TransientSolution2 (the copy transientrestart makes) too
+
+	% Swap in the stab forcing, change nothing else in smb / frontalforcings
+	md.smb.temperature_anomaly        = smb_stab4_rev2.temperature_anomaly;
+	md.smb.precipitation_anomaly      = smb_stab4_rev2.precipitation_anomaly;
+	md.frontalforcings.thermalforcing = ocn_stab4_rev2.thermalforcing;
+
+
+	md.timestepping.start_time = 394;   % overwrite any float drift from results.time
+	md.timestepping.final_time = 594;
+
+	savemodel(org,md);
+end%}}}
+if perform(org,['Greenland_TIPMIP_Stab4.0-200y-Rev2.0_Run']),% {{{
+
+	md=loadmodel(org,['Greenland_TIPMIP_Stab4.0-200y-Rev2.0_Prep']);
+	
+	md.miscellaneous.name = org.steps(org.currentstep).string;
+
+	md=solve(md,'tr','runtimename',0,'loadonly',loadonly);
+
+	if md.cluster.interactive == 1
+		md=loadresultsfromcluster(md);
+	end
+
+	if (loadonly == 1) | (md.cluster.interactive == 1)
+		savemodel(org,md);
+	end
+
+end%}}}
+
+%if perform(org,['Greenland_TIPMIP_Stab4.0-200y-Rev2.0_Restart']),% {{{
+%	md = loadmodel(org,['Greenland_TIPMIP_Stab4.0-200y-Rev2.0_Run_1']);
+%
+%	n  = numel(md.results.TransientSolution);
+%	t0 = md.results.TransientSolution(n).time;
+%	md.results.TransientSolution = md.results.TransientSolution(n);  % keep last step only
+%	md = transientrestart(md, 1);
+%	md.results = struct();
+%
+%	md.timestepping.start_time = round(t0*100)/100;  % avoid float drift
+%	md.timestepping.final_time = 594;
+%
+%	% Optional: fresh cluster settings (see step 3)
+%	md.cluster = cluster;
+%
+%	md.miscellaneous.name = org.steps(org.currentstep).string;
+%	md = solve(md,'tr','runtimename',0,'loadonly',loadonly);
+%	if md.cluster.interactive == 1
+%		md = loadresultsfromcluster(md);
+%	end
+%	if (loadonly == 1) | (md.cluster.interactive == 1)
+%		savemodel(org,md);
+%	end
+%end%}}}
+%if perform(org,['Greenland_TIPMIP_Stab2.0_Run']),% {{{
+%
+%   mdA = loadmodel(org,['Greenland_TIPMIP_Stab2.0_Run_2c']);   % t = start ... t0
+%   mdB = loadmodel(org,['Greenland_TIPMIP_Stab2.0_Restart']);    % t = t0 ... 394
+%
+%   % Pull out the step arrays (ISSM's 'solution' class keeps them in .steps)
+%   getsteps = @(r) ifelse_steps(r);
+%   A = mdA.results.TransientSolution; if isa(A,'solution'), A = A.steps; end
+%   B = mdB.results.TransientSolution; if isa(B,'solution'), B = B.steps; end
+%
+%   % Drop steps of A that overlap with B (the restart may re-save t0)
+%   tA = [A.time];  tB = [B.time];
+%   A  = A(tA < tB(1) - 1e-6);
+%
+%   % Make the field sets identical (requested_outputs should match, but check)
+%   fA = fieldnames(A);  fB = fieldnames(B);
+%   common = intersect(fA,fB,'stable');
+%   if numel(common)~=numel(fA) || numel(common)~=numel(fB)
+%      warning('Dropping fields not present in both runs.');
+%   end
+%   A = rmfield(A,setdiff(fA,common));
+%   B = rmfield(B,setdiff(fB,common));
+%   B = orderfields(B,A);
+%
+%   % Concatenate and renumber
+%   S = [A(:); B(:)].';
+%   for i=1:numel(S), S(i).step = i; end
+%
+%   % Use the restart model as the container (it has the latest geometry/state)
+%   md = mdB;
+%   if isa(md.results.TransientSolution,'solution')
+%      md.results.TransientSolution.steps = S;
+%   else
+%      md.results.TransientSolution = S;
+%   end
+%
+%   md.miscellaneous.name = org.steps(org.currentstep).string;
+%   savemodel(org,md);
+%end%}}}
+
