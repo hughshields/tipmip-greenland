@@ -249,7 +249,7 @@ function results=md2tipmip(md,directoryname,source_id,ism_id,esm_id,variant_id,r
 
 		%libmassbffl: floating-ice basal mass balance, 0 wherever there is no floating ice
 		bmbval = -(transpose(interp_quiet(md.mesh.elements,md.mesh.x,md.mesh.y,meltfl_sum/nb,gridx,gridy,NaN))*md.materials.rho_ice/yts);
-		bmbval(f.floatingice==0) = 0;
+		bmbval(f.sftflf==0) = 0;
 		bmbval(isnan(bmbval))    = 0;
 		f.bmb = bmbval;
 
